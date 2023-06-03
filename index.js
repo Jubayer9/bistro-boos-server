@@ -66,7 +66,7 @@ async function run() {
       const query = { email: email }
       const user = await usersCollection.findOne(query);
       if (user?.role !== 'admin') {
-        return res.status(403).send({error: true, message: 'forbidden message'})
+        return res.status(403).send({ error: true, message: 'forbidden message' })
       }
       next()
     }
@@ -128,6 +128,21 @@ async function run() {
       const result = await menuCollection.find().toArray();
       res.send(result)
     })
+
+    // new Item add menu
+    app.post('/menu', verifyJWT, verifyAdmin, async (req, res) => {
+      const newItem = req.body;
+      const result = await menuCollection.insertOne(newItem)
+      res.send(result);
+
+    })
+    app.delete('/menu/:id', verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) }
+      const result = await menuCollection.deleteOne(query)
+      res.send(result)
+    })
+
     // review related api
     app.get('/reviews', async (req, res) => {
       const result = await reviewCollection.find().toArray();
