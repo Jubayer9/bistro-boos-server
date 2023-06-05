@@ -1,14 +1,16 @@
 const express = require('express');
 const app = express();
 const jwt = require('jsonwebtoken');
+const morgan = require('morgan');
 const cors = require('cors');
 require('dotenv').config()
+const stripe = require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const port = process.env.PORT || 5000
 
 // middleware
 app.use(cors());
 app.use(express.json())
-
+app.use(morgan('dev'))
 const verifyJWT = (req, res, next) => {
   const authorization = req.headers.authorization;
   console.log(req.headers);
@@ -51,12 +53,13 @@ async function run() {
     const usersCollection = client.db("bistroDB").collection('users');
     const menuCollection = client.db("bistroDB").collection('menu');
     const reviewCollection = client.db("bistroDB").collection('reviews');
-    const cartCollection = client.db("bistroDB").collection('caets');
+    const cartCollection = client.db("bistroDB").collection('carts');
+    const paymentCollection = client.db("bistroDB").collection('payments');
 
 
     app.post('/jwt', (req, res) => {
       const user = req.body;
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '10h' })
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '100h' })
       res.send({ token })
     })
 
@@ -75,8 +78,8 @@ async function run() {
     // users related apis
 
     app.get('/users', verifyJWT, verifyAdmin, async (req, res) => {
-      const result = await usersCollection.find().toArray();
-      res.send(result)
+      const insertResult = await usersCollection.find().toArray();
+      res.send(insertResult)
     })
 
 
@@ -87,9 +90,9 @@ async function run() {
       if (existingUser) {
         return res.send({ message: 'user already exists' })
       }
-      const result = await usersCollection.insertOne(user);
+      const insertResult = await usersCollection.insertOne(user);
 
-      res.send(result);
+      res.send(insertResult);
 
     });
 
@@ -106,8 +109,8 @@ async function run() {
 
       const query = { email: email }
       const user = await usersCollection.findOne(query);
-      const result = { admin: user?.role === 'admin' }
-      res.send(result)
+      const insertResult = { admin: user?.role === 'admin' }
+      res.send(insertResult)
     })
     app.patch('/users/admin/:id', async (req, res) => {
       const id = req.params.id;
@@ -118,35 +121,35 @@ async function run() {
           role: 'admin'
         },
       };
-      const result = await usersCollection.updateOne(filter, updateDoc)
-      res.send(result);
+      const insertResult = await usersCollection.updateOne(filter, updateDoc)
+      res.send(insertResult);
     })
 
 
     // menu related apis
     app.get('/menu', async (req, res) => {
-      const result = await menuCollection.find().toArray();
-      res.send(result)
+      const insertResult = await menuCollection.find().toArray();
+      res.send(insertResult)
     })
 
     // new Item add menu
     app.post('/menu', verifyJWT, verifyAdmin, async (req, res) => {
       const newItem = req.body;
-      const result = await menuCollection.insertOne(newItem)
-      res.send(result);
+      const insertResult = await menuCollection.insertOne(newItem)
+      res.send(insertResult);
 
     })
     app.delete('/menu/:id', verifyJWT, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) }
-      const result = await menuCollection.deleteOne(query)
-      res.send(result)
+      const insertResult = await menuCollection.deleteOne(query)
+      res.send(insertResult)
     })
 
     // review related api
     app.get('/reviews', async (req, res) => {
-      const result = await reviewCollection.find().toArray();
-      res.send(result)
+      const insertResult = await reviewCollection.find().toArray();
+      res.send(insertResult)
     })
 
     //cart collection apis
@@ -165,18 +168,18 @@ async function run() {
 
 
       const query = { email: email };
-      const result = await cartCollection.find(query).toArray();
-      res.send(result);
+      const insertResult = await cartCollection.find(query).toArray();
+      res.send(insertResult);
 
     });
 
     // cart collection 
     app.post('/carts', async (req, res) => {
       const item = req.body;
-      const result = await cartCollection.insertOne(item);
-      console.log(result);
+      const insertResult = await cartCollection.insertOne(item);
+      console.log(insertResult);
 
-      res.send(result)
+      res.send(insertResult)
 
     })
 
@@ -184,8 +187,107 @@ async function run() {
     app.delete('/carts/:id', async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) }
-      const result = await cartCollection.deleteOne(query)
+      const insertResult = await cartCollection.deleteOne(query)
 
+      res.send(insertResult)
+    })
+
+    // create payment intent
+    app.post('/create-payment-intent', verifyJWT, async (req, res) => {
+      const { price } = req.body;
+      const amount = parseInt((price * 100).toFixed(2))
+        ;
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ['card']
+
+
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+
+    })
+
+    // payment related api
+    app.post('/payments', verifyJWT, async (req, res) => {
+      const payment = req.body;
+      const insertResult = await paymentCollection.insertOne(payment);
+      const query = { _id: { $in: payment.cartItems.map(id => new ObjectId(id)) } }
+      const deleteResult = await cartCollection.deleteMany(query)
+      res.send({ insertResult, deleteResult });
+    })
+
+    app.get('/admin-stats', async (req, res) => {
+      const users = await usersCollection.estimatedDocumentCount();
+      const products = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+      // best way to get sum of a field is to use group and sum operator
+      /**
+       * PaymentCollection.aggregate([
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$amount'}
+          }
+        }
+      ]).toArray
+       * 
+       */
+      const payments = await paymentCollection.find().toArray()
+      const revenue = payments.reduce((sum, payment) => sum + payment.price, 0)
+      res.send({
+        users,
+        products,
+        orders,
+        revenue
+      })
+    })
+    /**
+     * -----------------------------------
+     * BANGLA SYSTEM(second bets solution)
+     * -----------------------------------
+     * 1. load all payments
+     * 2. for each item in the menuItems array get the menuItems array
+     * 3. for each item in the menuItems array get the menuItem from the menu collection
+     * 4. put them in an array: allOrderedItems
+     * 5. separate allOrderedItems  by category using filter 
+     * 6. now get the quantity by using length: pizzas.length
+     * 7. for each category use reduce to get the total amount spent on this  category
+     * 
+     */
+    app.get('/order-stars',verifyJWT,verifyAdmin, async (req, res) => {
+
+      const pipeline = [
+        {
+          $lookup: {
+            from: 'menu',
+            localField: 'menuItems',
+            foreignField: '_id',
+            as: 'menuItem'
+          }
+        },
+        { $unwind: '$menuItem' },
+        {
+          $group: {
+            _id: '$menuItem.category',
+            count: { $sum: 1 },
+            totalPrice: { $sum: '$menuItem.price' }
+          }
+        },
+        {
+          $project:{
+            category:'$_id',
+            count:1,
+            totalPrice:{$round:['$totalPrice',2]}
+          }
+        }
+
+      ];
+      const result = await paymentCollection.aggregate(pipeline).toArray()
       res.send(result)
     })
 
